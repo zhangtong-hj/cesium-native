@@ -2,9 +2,15 @@ add_library(Cesium3DTilesSelection "")
 
 configure_cesium_library(Cesium3DTilesSelection)
 
-cesium_glob_files(CESIUM_3DTILES_SELECTION_SOURCES src/*.cpp)
+cesium_glob_files(CESIUM_3DTILES_SELECTION_SOURCES
+    src/*.cpp
+    src/teExtra/*.cpp
+)
 cesium_glob_files(CESIUM_3DTILES_SELECTION_HEADERS src/*.h)
-cesium_glob_files(CESIUM_3DTILES_SELECTION_PUBLIC_HEADERS include/Cesium3DTilesSelection/*.h)
+cesium_glob_files(CESIUM_3DTILES_SELECTION_PUBLIC_HEADERS
+    include/Cesium3DTilesSelection/*.h
+    include/Cesium3DTilesSelection/teExtra/*.h
+)
 cesium_glob_files(CESIUM_3DTILES_SELECTION_TEST_SOURCES test/*.cpp)
 cesium_glob_files(CESIUM_3DTILES_SELECTION_TEST_HEADERS test/*.h)
 
