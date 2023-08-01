@@ -84,71 +84,86 @@ void rasterizePolygons(
       size_t(image.width * image.height * image.channels),
       outsideColor);
 
-
-  std::vector<float> vecHeatValue,vecOpacityValue;
+  std::vector<float> vecHeatValue, vecOpacityValue;
   vecHeatValue.resize(image.width * image.height, 0);
   vecOpacityValue.resize(image.width * image.height, 0);
   std::vector<CesiumGeospatial::GlobeRectangle> vecHpBoundingVolume;
   double radius = data.radius;
   size_t width = size_t(image.width);
   size_t height = size_t(image.height);
+  
+
   if (data.pos.size() > 0) {
-    vecHpBoundingVolume.push_back(CesiumGeospatial::GlobeRectangle(
-        data.pos[0].x - radius,
-        data.pos[0].y - radius,
-        data.pos[0].x + radius,
-        data.pos[0].y + radius));
-    for (auto pos : data.pos) {
-      vecHpBoundingVolume[0] = vecHpBoundingVolume[0].computeUnion(CesiumGeospatial::GlobeRectangle(
-              pos.x - radius,
-              pos.y - radius,
-              pos.x + radius,
-              pos.y + radius));
-    }
-    for (int idx = 0; idx < vecHpBoundingVolume.size(); idx++) {
-      if (!rectangle.computeIntersection(vecHpBoundingVolume[idx]))
-        continue;
-      int N = data.pos.size();
-      glm::dvec2 center(data.pos[idx].x, data.pos[idx].y);
-      for (size_t j = 0; j < height; ++j) {
-        const double pixelY =
-            rectangle.getSouth() +
-            rectangleHeight * (1.0 - (double(j) + 0.5) / double(height));
-        for (size_t i = 0; i < width; ++i) {
-          const double pixelX = rectangle.getWest() + rectangleWidth *
-                                                          (double(i) + 0.5) /
-                                                          double(width);
-          const glm::dvec2 v(pixelX, pixelY);
-          const Cartographic cartPoint(pixelX, pixelY);
-          if (!vecHpBoundingVolume[idx].contains(cartPoint))
-            continue;
-          // vector3 point(pixelX, pixelY, 0);
-          // matrix D = matrix(N, 1);
-          //
-          // // Calculate Variogram Model for point i
-          // matrix tmp =
-          //     calculateVariogram(point, data.vecPoint, N, D, data.vmodel);
-          // matrix W = data.mVInvt->I->multiply(D);
-          // point.z = 0;
-          // for (int n = 0; n < N; ++n) {
-          //   point.z += W(n, 0) * data.vecPoint[n].z;
-          // }
-          //
-          // vecHeatValue[image.width * j + i] = point.z;
-          double dSumDis = 0;
-          for (auto samplePoint :  data.pos) {
-            glm::dvec2 sample(samplePoint.x, samplePoint.y);
-            dSumDis += 1.0/distance(sample, v);
+    for (const CartographicPolygon& polygon : cartographicPolygons) {
+      const std::vector<glm::dvec2>& vertices = polygon.getVertices();
+      const std::vector<uint32_t>& indices = polygon.getIndices();
+      for (size_t triangle = 0; triangle < indices.size() / 3; ++triangle) {
+        const glm::dvec2& a = vertices[indices[3 * triangle]];
+        const glm::dvec2& b = vertices[indices[3 * triangle + 1]];
+        const glm::dvec2& c = vertices[indices[3 * triangle + 2]];
+
+        // TODO: deal with the corner cases here
+        const double minX = glm::min(a.x, glm::min(b.x, c.x));
+        const double minY = glm::min(a.y, glm::min(b.y, c.y));
+        const double maxX = glm::max(a.x, glm::max(b.x, c.x));
+        const double maxY = glm::max(a.y, glm::max(b.y, c.y));
+
+        const CesiumGeospatial::GlobeRectangle triangleBounds(
+            minX,
+            minY,
+            maxX,
+            maxY);
+
+        // skip this triangle if it is entirely outside the tile bounds
+        if (!rectangle.computeIntersection(triangleBounds)) {
+          continue;
+        }
+
+        const glm::dvec2 ab = b - a;
+        const glm::dvec2 ab_perp(-ab.y, ab.x);
+        const glm::dvec2 bc = c - b;
+        const glm::dvec2 bc_perp(-bc.y, bc.x);
+        const glm::dvec2 ca = a - c;
+        const glm::dvec2 ca_perp(-ca.y, ca.x);
+
+        for (size_t j = 0; j < height; ++j) {
+          const double pixelY =
+              rectangle.getSouth() +
+              rectangleHeight * (1.0 - (double(j) + 0.5) / double(height));
+          for (size_t i = 0; i < width; ++i) {
+            const double pixelX = rectangle.getWest() + rectangleWidth *
+                                                            (double(i) + 0.5) /
+                                                            double(width);
+            const glm::dvec2 v(pixelX, pixelY);
+
+            const glm::dvec2 av = v - a;
+            const glm::dvec2 cv = v - c;
+
+            const double v_proj_ab_perp = glm::dot(av, ab_perp);
+            const double v_proj_bc_perp = glm::dot(cv, bc_perp);
+            const double v_proj_ca_perp = glm::dot(cv, ca_perp);
+
+            // will determine in or out, irrespective of winding
+            if ((v_proj_ab_perp >= 0.0 && v_proj_ca_perp >= 0.0 &&
+                 v_proj_bc_perp >= 0.0) ||
+                (v_proj_ab_perp <= 0.0 && v_proj_ca_perp <= 0.0 &&
+                 v_proj_bc_perp <= 0.0)) {
+              double dSumDis = 0;
+              for (const auto& samplePoint : data.pos) {
+                glm::dvec2 sample(samplePoint.x, samplePoint.y);
+                dSumDis += 1.0 / distance(sample, v);
+              }
+              for (const auto& samplePoint : data.pos) {
+                glm::dvec2 sample(samplePoint.x, samplePoint.y);
+                vecHeatValue[image.width * j + i] +=
+                    1.0 / distance(sample, v) * samplePoint.z / dSumDis;
+              }
+            }
           }
-          for (auto samplePoint : data.pos) {
-            glm::dvec2 sample(samplePoint.x, samplePoint.y);
-            vecHeatValue[image.width * j + i] +=
-                1.0 / distance(sample, v) * samplePoint.z / dSumDis;
-          }
-          
         }
       }
     }
+
     for (size_t j = 0; j < height; ++j) {
       for (size_t i = 0; i < width; ++i) {
         int k = 0;
