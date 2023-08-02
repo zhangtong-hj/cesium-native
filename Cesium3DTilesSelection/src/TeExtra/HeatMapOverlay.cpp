@@ -20,6 +20,23 @@ using namespace CesiumUtility;
 
 namespace Cesium3DTilesSelection {
 namespace {
+bool InsidePolygon(glm::dvec2 point, std::vector<glm::dvec2> polygon) {
+  bool inside = false;
+  float x = point.x, y = point.y;
+  int l = polygon.size();
+  int i, j = l - 1;
+  for (i = 0; i < l; j = i, i++) {
+    float ax = polygon[j].x;
+    float ay = polygon[j].y;
+    float bx = polygon[i].x;
+    float by = polygon[i].y;
+    if ((ay >= y && by < y) || (by >= y && ay < y)) {
+      inside ^= (ax + (bx - ax) * (y - ay) / (by - ay) > x);
+    }
+  }
+  return inside;
+}
+
 void rasterizePolygons(
     LoadedRasterOverlayImage& loaded,
     const CesiumGeospatial::GlobeRectangle& rectangle,
@@ -49,20 +66,19 @@ void rasterizePolygons(
   //   return;
   // }
 
-  bool completelyOutsidePolygons = true;
-  for (const CartographicPolygon& selection : cartographicPolygons) {
-    const std::optional<CesiumGeospatial::GlobeRectangle>& boundingRectangle =
-        selection.getBoundingRectangle();
-
-    if (boundingRectangle &&
-        rectangle.computeIntersection(*boundingRectangle)) {
-      completelyOutsidePolygons = false;
-      break;
-    }
+  double minX = data.bnd[0].x, maxX = data.bnd[0].x, minY = data.bnd[0].y,
+               maxY = data.bnd[0].y;
+  // find max&min rectangle of bound
+  for(const auto& point:data.bnd){
+    minX = glm::min(minX, point.x);
+    maxX = glm::max(maxX, point.x);
+    minY = glm::min(minY, point.y);
+    maxY = glm::max(maxY, point.y);
   }
 
+  const CesiumGeospatial::GlobeRectangle coverRectangle(minX,minY,maxX,maxY);
   // create a 1x1 mask if the rectangle is completely outside all polygons
-  if (completelyOutsidePolygons) {
+  if (!rectangle.computeIntersection(coverRectangle)) {
     loaded.moreDetailAvailable = false;
     image.width = 1;
     image.height = 1;
@@ -92,102 +108,54 @@ void rasterizePolygons(
   size_t width = size_t(image.width);
   size_t height = size_t(image.height);
   
+  for (size_t j = 0; j < height; ++j) {
+    const double pixelY =
+        rectangle.getSouth() +
+        rectangleHeight * (1.0 - (double(j) + 0.5) / double(height));
+    for (size_t i = 0; i < width; ++i) {
+      const double pixelX = rectangle.getWest() + rectangleWidth *
+                                                      (double(i) + 0.5) /
+                                                      double(width);
+      const glm::dvec2 v(pixelX, pixelY);
 
-  if (data.pos.size() > 0) {
-    for (const CartographicPolygon& polygon : cartographicPolygons) {
-      const std::vector<glm::dvec2>& vertices = polygon.getVertices();
-      const std::vector<uint32_t>& indices = polygon.getIndices();
-      for (size_t triangle = 0; triangle < indices.size() / 3; ++triangle) {
-        const glm::dvec2& a = vertices[indices[3 * triangle]];
-        const glm::dvec2& b = vertices[indices[3 * triangle + 1]];
-        const glm::dvec2& c = vertices[indices[3 * triangle + 2]];
-
-        // TODO: deal with the corner cases here
-        const double minX = glm::min(a.x, glm::min(b.x, c.x));
-        const double minY = glm::min(a.y, glm::min(b.y, c.y));
-        const double maxX = glm::max(a.x, glm::max(b.x, c.x));
-        const double maxY = glm::max(a.y, glm::max(b.y, c.y));
-
-        const CesiumGeospatial::GlobeRectangle triangleBounds(
-            minX,
-            minY,
-            maxX,
-            maxY);
-
-        // skip this triangle if it is entirely outside the tile bounds
-        if (!rectangle.computeIntersection(triangleBounds)) {
-          continue;
+      if (InsidePolygon(v,data.bnd)) {
+        double dSumDis = 0;
+        for (const auto& samplePoint : data.pos) {
+          glm::dvec2 sample(samplePoint.x, samplePoint.y);
+          dSumDis += 1.0 / distance(sample, v);
         }
-
-        const glm::dvec2 ab = b - a;
-        const glm::dvec2 ab_perp(-ab.y, ab.x);
-        const glm::dvec2 bc = c - b;
-        const glm::dvec2 bc_perp(-bc.y, bc.x);
-        const glm::dvec2 ca = a - c;
-        const glm::dvec2 ca_perp(-ca.y, ca.x);
-
-        for (size_t j = 0; j < height; ++j) {
-          const double pixelY =
-              rectangle.getSouth() +
-              rectangleHeight * (1.0 - (double(j) + 0.5) / double(height));
-          for (size_t i = 0; i < width; ++i) {
-            const double pixelX = rectangle.getWest() + rectangleWidth *
-                                                            (double(i) + 0.5) /
-                                                            double(width);
-            const glm::dvec2 v(pixelX, pixelY);
-
-            const glm::dvec2 av = v - a;
-            const glm::dvec2 cv = v - c;
-
-            const double v_proj_ab_perp = glm::dot(av, ab_perp);
-            const double v_proj_bc_perp = glm::dot(cv, bc_perp);
-            const double v_proj_ca_perp = glm::dot(cv, ca_perp);
-
-            // will determine in or out, irrespective of winding
-            if ((v_proj_ab_perp >= 0.0 && v_proj_ca_perp >= 0.0 &&
-                 v_proj_bc_perp >= 0.0) ||
-                (v_proj_ab_perp <= 0.0 && v_proj_ca_perp <= 0.0 &&
-                 v_proj_bc_perp <= 0.0)) {
-              double dSumDis = 0;
-              for (const auto& samplePoint : data.pos) {
-                glm::dvec2 sample(samplePoint.x, samplePoint.y);
-                dSumDis += 1.0 / distance(sample, v);
-              }
-              for (const auto& samplePoint : data.pos) {
-                glm::dvec2 sample(samplePoint.x, samplePoint.y);
-                vecHeatValue[image.width * j + i] +=
-                    1.0 / distance(sample, v) * samplePoint.z / dSumDis;
-              }
-            }
-          }
+        for (const auto& samplePoint : data.pos) {
+          glm::dvec2 sample(samplePoint.x, samplePoint.y);
+          vecHeatValue[image.width * j + i] +=
+              1.0 / distance(sample, v) * samplePoint.z / dSumDis;
         }
       }
     }
+  }
 
-    for (size_t j = 0; j < height; ++j) {
-      for (size_t i = 0; i < width; ++i) {
-        int k = 0;
-        float fPointVal = vecHeatValue[image.width * j + i];
-        for (k = 0; k < data.val.size()-1 && fPointVal > data.val[k + 1]; k++) {
-        }
-        if (k == data.val.size() - 1) {
-          image.pixelData[(image.width * j + i) * 4 + 0] = (std::byte)data.col[k].x;
-          image.pixelData[(image.width * j + i) * 4 + 1] =
-              (std::byte)data.col[k].y;
-          image.pixelData[(image.width * j + i) * 4 + 2] =
-              (std::byte)data.col[k].z;
-          image.pixelData[(image.width * j + i) * 4 + 3] = (std::byte)255;
-        } else {
-          glm::vec3 low = (glm::vec3)data.col[k];
-          glm::vec3 high = (glm::vec3)data.col[k + 1];
-          float a = (fPointVal - data.val[k]) / (data.val[k + 1] - data.val[k]);
-          glm::vec3 mixed = (1 - a) * low + a * high;
-          glm::uvec3 umixed = (glm::uvec3)((glm::ivec3)mixed);
-          image.pixelData[(image.width * j + i) * 4 + 0] = (std::byte)umixed.x;
-          image.pixelData[(image.width * j + i) * 4 + 1] = (std::byte)umixed.y;
-          image.pixelData[(image.width * j + i) * 4 + 2] = (std::byte)umixed.z;
-          image.pixelData[(image.width * j + i) * 4 + 3] = (std::byte)255;
-        }
+  for (size_t j = 0; j < height; ++j) {
+    for (size_t i = 0; i < width; ++i) {
+      int k = 0;
+      float fPointVal = vecHeatValue[image.width * j + i];
+      for (k = 0; k < data.val.size()-1 && fPointVal > data.val[k + 1]; k++) {
+      }
+      if (k == data.val.size() - 1) {
+        image.pixelData[(image.width * j + i) * 4 + 0] = (std::byte)data.col[k].x;
+        image.pixelData[(image.width * j + i) * 4 + 1] =
+            (std::byte)data.col[k].y;
+        image.pixelData[(image.width * j + i) * 4 + 2] =
+            (std::byte)data.col[k].z;
+        image.pixelData[(image.width * j + i) * 4 + 3] = (std::byte)255;
+      } else {
+        glm::vec3 low = (glm::vec3)data.col[k];
+        glm::vec3 high = (glm::vec3)data.col[k + 1];
+        float a = (fPointVal - data.val[k]) / (data.val[k + 1] - data.val[k]);
+        glm::vec3 mixed = (1 - a) * low + a * high;
+        glm::uvec3 umixed = (glm::uvec3)((glm::ivec3)mixed);
+        image.pixelData[(image.width * j + i) * 4 + 0] = (std::byte)umixed.x;
+        image.pixelData[(image.width * j + i) * 4 + 1] = (std::byte)umixed.y;
+        image.pixelData[(image.width * j + i) * 4 + 2] = (std::byte)umixed.z;
+        image.pixelData[(image.width * j + i) * 4 + 3] = (std::byte)255;
       }
     }
   }
@@ -279,8 +247,7 @@ void rasterizePolygons(
   //      For the heat point int the rectangle;
   //          Add up its heat value in the pixel;
   //3)Turn the numerical value to the pixel value;
-  //           
-  
+  //
 } // namespace
 
 class CESIUM3DTILESSELECTION_API HeatMapTileProvider final
