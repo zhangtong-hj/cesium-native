@@ -21,11 +21,14 @@ struct HeatMapDataSource {
   std::vector<glm::dvec3> pos;
   std::vector<glm::u8vec3> col;
   std::vector<float> val;
+  std::vector<glm::dvec2> bnd;
   float radius;
   VariogramModel vmodel;
   vector3* vecPoint;
   matrix* mVInvt;
 };
+
+bool InsidePolygon(glm::dvec2 point, std::vector<glm::dvec2> polygon);
 
 class CESIUM3DTILESSELECTION_API HeatMapOverlay final : public RasterOverlay {
 
