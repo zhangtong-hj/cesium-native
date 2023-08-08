@@ -91,8 +91,8 @@ void rasterizePolygons(
   // get grid params
   const double MIN_GRID_SIZE=0;
   double offsetX = 0, offsetY = 0, sizeX = grid.size.x, sizeY = grid.size.y,
-         lineWidth = grid.lineW, sampleNumX = grid.smplFreq.x,
-         sampleNumY = grid.smplFreq.y;
+         sampleNumX = grid.smplFreq.x, sampleNumY = grid.smplFreq.y,
+         lineWidth = grid.lineW;
   int gridWidth=0,gridHeight=0,sampleMode=grid.smplMode;
   bool useGrid = false;
 
@@ -117,13 +117,14 @@ void rasterizePolygons(
   double radius = data.radius;
   size_t width = size_t(image.width);
   size_t height = size_t(image.height);
+
   if(useGrid){
     for (size_t j = 0; j < gridHeight; ++j)
       for (size_t i = 0; i < gridWidth; ++i)
         for (size_t sx = 0; sx < sampleNumX; ++sx)
           for (size_t sy = 0; sy < sampleNumY; ++sy) {
-            const double pixelY = ((int)(rectangle.getSouth() / sizeY) + j + sy / sampleNumY) * sizeY;
-            const double pixelX = ((int)(rectangle.getWest() / sizeX) + i + sy / sampleNumX) * sizeX;
+            const double pixelY = ((int)(rectangle.getSouth() / sizeY) + j + (sy + 0.5) / sampleNumY) * sizeY;
+            const double pixelX = ((int)(rectangle.getWest() / sizeX) + i + (sx + 0.5) / sampleNumX) * sizeX;
             const glm::dvec2 v(pixelX, pixelY);
             double dSumDis = 0;
             float heatValue = 0;
@@ -217,9 +218,24 @@ void rasterizePolygons(
           image.pixelData[(image.width * j + i) * 4 + 3] = (std::byte)0;
           continue;
         }
+        const double pixelLeft =
+            rectangle.getWest() + rectangleWidth * double(i) / double(width),
+                     pixelRight = rectangle.getWest() + rectangleWidth *
+                                                          (double(i) + 1) /
+                                                          double(width),
+                     pixelBottom =
+                         rectangle.getSouth() +
+                              rectangleHeight *
+                                  (1.0 - (double(j) + 1) / double(height)),
+                     pixelTop =
+                         rectangle.getSouth() +
+                              rectangleHeight *
+                                  (1.0 - double(j) / double(height));
         const double dislineX = std::fmod(pixelX, sizeX),
                      dislineY = std::fmod(pixelY, sizeY);
-        if (dislineX < lineWidth || dislineY < lineWidth) {
+        if (dislineX < lineWidth || dislineY < lineWidth ||
+            ((int)(pixelLeft / sizeX) < (int)(pixelRight / sizeX)) ||
+            ((int)(pixelBottom / sizeY) < (int)(pixelTop / sizeY))) {
           image.pixelData[(image.width * j + i) * 4 + 0] = (std::byte)128;
           image.pixelData[(image.width * j + i) * 4 + 1] = (std::byte)128;
           image.pixelData[(image.width * j + i) * 4 + 2] = (std::byte)128;
