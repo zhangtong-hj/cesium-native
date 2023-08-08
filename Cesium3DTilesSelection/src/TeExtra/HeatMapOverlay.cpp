@@ -43,6 +43,7 @@ void rasterizePolygons(
     const glm::dvec2& textureSize,
     const std::vector<CartographicPolygon>& cartographicPolygons,
     const HeatMapDataSource& data,
+    const HeatMapGridSetting& grid,
     bool invertSelection) {
 
   CesiumGltf::ImageCesium& image = loaded.image.emplace();
@@ -52,19 +53,6 @@ void rasterizePolygons(
   int t = (int)data.radius;
   insideColor = static_cast<std::byte>(0);
   outsideColor = static_cast<std::byte>(0);
-
-  // create a 1x1 mask if the rectangle is completely inside a polygon
-  // if (Cesium3DTilesSelection::CesiumImpl::withinPolygons(
-  //         rectangle,
-  //         cartographicPolygons)) {
-  //   loaded.moreDetailAvailable = false;
-  //   image.width = 1;
-  //   image.height = 1;
-  //   image.channels = 1;
-  //   image.bytesPerChannel = 1;
-  //   image.pixelData.resize(1, insideColor);
-  //   return;
-  // }
 
   double minX = data.bnd[0].x, maxX = data.bnd[0].x, minY = data.bnd[0].y,
                maxY = data.bnd[0].y;
@@ -82,9 +70,9 @@ void rasterizePolygons(
     loaded.moreDetailAvailable = false;
     image.width = 1;
     image.height = 1;
-    image.channels = 1;
+    image.channels = 4;
     image.bytesPerChannel = 1;
-    image.pixelData.resize(1, outsideColor);
+    image.pixelData.resize(4, outsideColor);
     return;
   }
 
@@ -100,34 +88,92 @@ void rasterizePolygons(
       size_t(image.width * image.height * image.channels),
       outsideColor);
 
-  std::vector<float> vecHeatValue, vecOpacityValue;
-  vecHeatValue.resize(image.width * image.height, 0);
-  vecOpacityValue.resize(image.width * image.height, 0);
+  // get grid params
+  const double MIN_GRID_SIZE=0;
+  double offsetX = 0, offsetY = 0, sizeX = grid.size.x, sizeY = grid.size.y,
+         lineWidth = grid.lineW, sampleNumX = grid.smplFreq.x,
+         sampleNumY = grid.smplFreq.y;
+  int gridWidth=0,gridHeight=0,sampleMode=grid.smplMode;
+  bool useGrid = false;
+
+  std::vector<float> vecHeatValuePxl, vecHeatValue, vecOpacityValue, sampleNum;
+  std::vector<bool> isLine, inPoly;
+  isLine.resize(image.width * image.height, 0);
+  inPoly.resize(image.width * image.height, 0);
+
+  if (sizeX > MIN_GRID_SIZE && sizeY > MIN_GRID_SIZE){
+    gridWidth = (int)(rectangleWidth / sizeX) + 2;
+    gridHeight =  (int)(rectangleHeight / sizeY) + 2;
+    useGrid = true;
+    vecHeatValue.resize(gridWidth * gridHeight, 0);
+    sampleNum.resize(gridWidth * gridHeight, 0);
+    vecOpacityValue.resize(gridWidth * gridHeight, 0);
+  } else {
+    vecHeatValuePxl.resize(image.width * image.height, 0);
+  }
+
+  
   std::vector<CesiumGeospatial::GlobeRectangle> vecHpBoundingVolume;
   double radius = data.radius;
   size_t width = size_t(image.width);
   size_t height = size_t(image.height);
-  
-  for (size_t j = 0; j < height; ++j) {
-    const double pixelY =
-        rectangle.getSouth() +
-        rectangleHeight * (1.0 - (double(j) + 0.5) / double(height));
-    for (size_t i = 0; i < width; ++i) {
-      const double pixelX = rectangle.getWest() + rectangleWidth *
-                                                      (double(i) + 0.5) /
-                                                      double(width);
-      const glm::dvec2 v(pixelX, pixelY);
+  if(useGrid){
+    for (size_t j = 0; j < gridHeight; ++j)
+      for (size_t i = 0; i < gridWidth; ++i)
+        for (size_t sx = 0; sx < sampleNumX; ++sx)
+          for (size_t sy = 0; sy < sampleNumY; ++sy) {
+            const double pixelY = ((int)(rectangle.getSouth() / sizeY) + j + sy / sampleNumY) * sizeY;
+            const double pixelX = ((int)(rectangle.getWest() / sizeX) + i + sy / sampleNumX) * sizeX;
+            const glm::dvec2 v(pixelX, pixelY);
+            double dSumDis = 0;
+            float heatValue = 0;
+            for (const auto& samplePoint : data.pos) {
+              glm::dvec2 sample(samplePoint.x, samplePoint.y);
+              dSumDis += 1.0 / distance(sample, v);
+            }
+            for (const auto& samplePoint : data.pos) {
+              glm::dvec2 sample(samplePoint.x, samplePoint.y);
+              heatValue += 1.0 / distance(sample, v) * samplePoint.z /
+                                dSumDis;
+            }
+            if (sampleMode == 0) {
+              if (vecHeatValue[gridWidth * j + i] <= 0) {
+                vecHeatValue[gridWidth * j + i] = heatValue;
+              } else {
+                vecHeatValue[gridWidth * j + i] =
+                    glm::min(vecHeatValue[gridWidth * j + i], heatValue);
+              }
+            } else if (sampleMode == 1) {
+              vecHeatValue[gridWidth * j + i] =
+                  glm::max(vecHeatValue[gridWidth * j + i], heatValue);
+            } else {
+              vecHeatValue[gridWidth * j + i] +=
+                  heatValue / sampleNumX / sampleNumY;
+            }
+          }
+  }else{
+    for (size_t j = 0; j < height; ++j) {
+      const double pixelY =
+          rectangle.getSouth() +
+          rectangleHeight * (1.0 - (double(j) + 0.5) / double(height));
+      for (size_t i = 0; i < width; ++i) {
+        const double pixelX = rectangle.getWest() + rectangleWidth *
+                                                        (double(i) + 0.5) /
+                                                        double(width);
+        const glm::dvec2 v(pixelX, pixelY);
 
-      if (InsidePolygon(v,data.bnd)) {
-        double dSumDis = 0;
-        for (const auto& samplePoint : data.pos) {
-          glm::dvec2 sample(samplePoint.x, samplePoint.y);
-          dSumDis += 1.0 / distance(sample, v);
-        }
-        for (const auto& samplePoint : data.pos) {
-          glm::dvec2 sample(samplePoint.x, samplePoint.y);
-          vecHeatValue[image.width * j + i] +=
-              1.0 / distance(sample, v) * samplePoint.z / dSumDis;
+        if (InsidePolygon(v, data.bnd)) {
+          inPoly[image.width * j + i] = true;
+          double dSumDis = 0;
+          for (const auto& samplePoint : data.pos) {
+            glm::dvec2 sample(samplePoint.x, samplePoint.y);
+            dSumDis += 1.0 / distance(sample, v);
+          }
+          for (const auto& samplePoint : data.pos) {
+            glm::dvec2 sample(samplePoint.x, samplePoint.y);
+            vecHeatValuePxl[image.width * j + i] +=
+                1.0 / distance(sample, v) * samplePoint.z / dSumDis;
+          }
         }
       }
     }
@@ -135,11 +181,53 @@ void rasterizePolygons(
 
   for (size_t j = 0; j < height; ++j) {
     for (size_t i = 0; i < width; ++i) {
+      float fPointVal = 0;
+      if (useGrid) {
+        const double pixelY =
+            rectangle.getSouth() +
+            rectangleHeight * (1.0 - (double(j) + 0.5) / double(height));
+        const double pixelX = rectangle.getWest() + rectangleWidth *
+                                                        (double(i) + 0.5) /
+                                                        double(width);
+        const glm::dvec2 v(pixelX, pixelY);
+        if (!InsidePolygon(v, data.bnd)) {
+          image.pixelData[(image.width * j + i) * 4 + 0] = (std::byte)0;
+          image.pixelData[(image.width * j + i) * 4 + 1] = (std::byte)0;
+          image.pixelData[(image.width * j + i) * 4 + 2] = (std::byte)0;
+          image.pixelData[(image.width * j + i) * 4 + 3] = (std::byte)0;
+          continue;
+        }
+        const double dislineX = std::fmod(pixelX, sizeX),
+                     dislineY = std::fmod(pixelY, sizeY);
+        if (dislineX < lineWidth || dislineY < lineWidth) {
+          image.pixelData[(image.width * j + i) * 4 + 0] = (std::byte)128;
+          image.pixelData[(image.width * j + i) * 4 + 1] = (std::byte)128;
+          image.pixelData[(image.width * j + i) * 4 + 2] = (std::byte)128;
+          image.pixelData[(image.width * j + i) * 4 + 3] = (std::byte)255;
+          continue;
+        }
+        int gridY = (int)(pixelY / sizeY) - (int)(rectangle.getSouth() / sizeY),
+            gridX = (int)(pixelX / sizeX) - (int)(rectangle.getWest() / sizeX);
+        fPointVal = vecHeatValue[gridWidth * gridY + gridX];
+      }else if (!inPoly[image.width * j + i]) {
+        image.pixelData[(image.width * j + i) * 4 + 0] = (std::byte)0;
+        image.pixelData[(image.width * j + i) * 4 + 1] = (std::byte)0;
+        image.pixelData[(image.width * j + i) * 4 + 2] = (std::byte)0;
+        image.pixelData[(image.width * j + i) * 4 + 3] = (std::byte)0;
+        continue;
+      } else {
+        fPointVal = vecHeatValuePxl[image.width * j + i];
+      }
+
       int k = 0;
-      float fPointVal = vecHeatValue[image.width * j + i];
       for (k = 0; k < data.val.size()-1 && fPointVal > data.val[k + 1]; k++) {
       }
-      if (k == data.val.size() - 1) {
+      if (k < 1) {
+        image.pixelData[(image.width * j + i) * 4 + 0] = (std::byte)0;
+        image.pixelData[(image.width * j + i) * 4 + 1] = (std::byte)0;
+        image.pixelData[(image.width * j + i) * 4 + 2] = (std::byte)0;
+        image.pixelData[(image.width * j + i) * 4 + 3] = (std::byte)0;
+      }else if (k == data.val.size() - 1) {
         image.pixelData[(image.width * j + i) * 4 + 0] = (std::byte)data.col[k].x;
         image.pixelData[(image.width * j + i) * 4 + 1] =
             (std::byte)data.col[k].y;
@@ -159,85 +247,6 @@ void rasterizePolygons(
       }
     }
   }
-
-  //
-  // for (int pixelX = 0; pixelX < image.width; pixelX++) {
-  //   for (int pixelY = 0; pixelY < image.height; pixelY++) {
-  //     int32_t t =glm::round(
-  //         vecHeatValue[image.width * pixelY + pixelX] / 100 * 255);
-  //     image.pixelData[(image.width * pixelY + pixelX) * 4+3] = (std::byte)t;
-  //     if (t>0)
-  //       image.pixelData[(image.width * pixelY + pixelX) * 4] = static_cast<std::byte>(0xff);
-  //     
-  //   }
-  // }
-  // TODO: this is naive approach, use line-triangle
-  // intersections to rasterize one row at a time
-  // NOTE: also completely ignores antimeridian (really these
-  // calculations should be normalized to the first vertex)
-  //for (const CartographicPolygon& polygon : cartographicPolygons) {
-  //  const std::vector<glm::dvec2>& vertices = polygon.getVertices();
-  //  const std::vector<uint32_t>& indices = polygon.getIndices();
-  //  for (size_t triangle = 0; triangle < indices.size() / 3; ++triangle) {
-  //    const glm::dvec2& a = vertices[indices[3 * triangle]];
-  //    const glm::dvec2& b = vertices[indices[3 * triangle + 1]];
-  //    const glm::dvec2& c = vertices[indices[3 * triangle + 2]];
-
-      // TODO: deal with the corner cases here
-  //    const double minX = glm::min(a.x, glm::min(b.x, c.x));
-  //    const double minY = glm::min(a.y, glm::min(b.y, c.y));
-  //    const double maxX = glm::max(a.x, glm::max(b.x, c.x));
-  //    const double maxY = glm::max(a.y, glm::max(b.y, c.y));
-
-  //    const CesiumGeospatial::GlobeRectangle triangleBounds(
-  //        minX,
-  //        minY,
-  //        maxX,
-  //        maxY);
-
-      // skip this triangle if it is entirely outside the tile bounds
-  //    if (!rectangle.computeIntersection(triangleBounds)) {
-  //      continue;
-  //    }
-
-  //    const glm::dvec2 ab = b - a;
-  //    const glm::dvec2 ab_perp(-ab.y, ab.x);
-  //    const glm::dvec2 bc = c - b;
-  //    const glm::dvec2 bc_perp(-bc.y, bc.x);
-  //    const glm::dvec2 ca = a - c;
-  //    const glm::dvec2 ca_perp(-ca.y, ca.x);
-
-  //    size_t width = size_t(image.width);
-  //    size_t height = size_t(image.height);
-
-  //    for (size_t j = 0; j < height; ++j) {
-  //      const double pixelY =
-  //          rectangle.getSouth() +
-  //          rectangleHeight * (1.0 - (double(j) + 0.5) / double(height));
-  //      for (size_t i = 0; i < width; ++i) {
-  //        const double pixelX = rectangle.getWest() + rectangleWidth *
-  //                                                        (double(i) + 0.5) /
-  //                                                        double(width);
-  //        const glm::dvec2 v(pixelX, pixelY);
-
-  //        const glm::dvec2 av = v - a;
-  //        const glm::dvec2 cv = v - c;
-
-  //        const double v_proj_ab_perp = glm::dot(av, ab_perp);
-  //        const double v_proj_bc_perp = glm::dot(cv, bc_perp);
-  //        const double v_proj_ca_perp = glm::dot(cv, ca_perp);
-
-          // will determine in or out, irrespective of winding
-  //        if ((v_proj_ab_perp >= 0.0 && v_proj_ca_perp >= 0.0 &&
-  //             v_proj_bc_perp >= 0.0) ||
-  //            (v_proj_ab_perp <= 0.0 && v_proj_ca_perp <= 0.0 &&
-  //             v_proj_bc_perp <= 0.0)) {
-  //         image.pixelData[(width * j + i)*4] = insideColor;
-  //        }
-  //      }
-  //    }
-  //  }
-  //}
 }
 
   //Make up a heat map;
@@ -256,6 +265,7 @@ class CESIUM3DTILESSELECTION_API HeatMapTileProvider final
 private:
   std::vector<CartographicPolygon> _polygons;
   HeatMapDataSource _dataSource;
+  HeatMapGridSetting _gridSetting;
   bool _invertSelection;
 
 public:
@@ -269,6 +279,7 @@ public:
       const CesiumGeospatial::Projection& projection,
       const std::vector<CartographicPolygon>& polygons,
       HeatMapDataSource dataSource,
+      HeatMapGridSetting gridSetting,
       bool invertSelection)
       : RasterOverlayTileProvider(
             pOwner,
@@ -288,6 +299,7 @@ public:
                     CesiumUtility::Math::PiOverTwo))),
         _polygons(polygons),
         _dataSource(dataSource),
+        _gridSetting(gridSetting),
         _invertSelection(invertSelection) {}
 
   virtual CesiumAsync::Future<LoadedRasterOverlayImage>
@@ -305,6 +317,7 @@ public:
          projection = this->getProjection(),
          rectangle = overlayTile.getRectangle(),
          dataSource = this->_dataSource,
+         gridSetting = this->_gridSetting,
          textureSize]() -> LoadedRasterOverlayImage {
           const CesiumGeospatial::GlobeRectangle tileRectangle =
               CesiumGeospatial::unprojectRectangleSimple(projection, rectangle);
@@ -318,6 +331,7 @@ public:
               textureSize,
               polygons,
               dataSource,
+              gridSetting,
               invertSelection);
 
           return result;
@@ -329,6 +343,7 @@ HeatMapOverlay::HeatMapOverlay(
     const std::string& name,
     const std::vector<CesiumGeospatial::CartographicPolygon>& polygons,
     HeatMapDataSource dataSource,
+    HeatMapGridSetting gridSetting,
     bool invertSelection,
     const CesiumGeospatial::Ellipsoid& ellipsoid,
     const CesiumGeospatial::Projection& projection,
@@ -336,6 +351,7 @@ HeatMapOverlay::HeatMapOverlay(
     : RasterOverlay(name, overlayOptions),
       _polygons(polygons),
       _dataSource(dataSource),
+      _gridSetting(gridSetting),
       _invertSelection(invertSelection),
       _ellipsoid(ellipsoid),
       _projection(projection) {}
@@ -364,6 +380,7 @@ HeatMapOverlay::createTileProvider(
               this->_projection,
               this->_polygons,
               this->_dataSource,
+              this->_gridSetting,
               this->_invertSelection)));
 }
 
