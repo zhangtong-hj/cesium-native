@@ -127,7 +127,27 @@ void rasterizePolygons(
             const glm::dvec2 v(pixelX, pixelY);
             double dSumDis = 0;
             float heatValue = 0;
+            double gridN = ((int)(rectangle.getSouth() / sizeY) + j +1) *
+                           sizeY,
+                   gridS=((int)(rectangle.getSouth() / sizeY) + j) * sizeY,
+                   gridW = ((int)(rectangle.getWest() / sizeX) + i) * sizeX,
+                   gridE = ((int)(rectangle.getWest() / sizeX) + i+1) * sizeX;
             for (const auto& samplePoint : data.pos) {
+              float pointValue = samplePoint.z;
+              if (samplePoint.x > gridW && samplePoint.x <= gridE &&
+                  samplePoint.y > gridS && samplePoint.y <= gridN) {
+                if (sampleMode == 0) {
+                  if (vecHeatValue[gridWidth * j + i] <= 0) {
+                    vecHeatValue[gridWidth * j + i] = pointValue;
+                  } else {
+                    vecHeatValue[gridWidth * j + i] = glm::min(
+                        vecHeatValue[gridWidth * j + i], pointValue);
+                  }
+                } else if (sampleMode == 1) {
+                  vecHeatValue[gridWidth * j + i] =
+                      glm::max(vecHeatValue[gridWidth * j + i], pointValue);
+                }
+              }
               glm::dvec2 sample(samplePoint.x, samplePoint.y);
               dSumDis += 1.0 / distance(sample, v);
             }
@@ -220,7 +240,7 @@ void rasterizePolygons(
       }
 
       int k = 0;
-      for (k = 0; k < data.val.size()-1 && fPointVal > data.val[k + 1]; k++) {
+      for (k = 0; k < data.val.size()-1 && fPointVal >= data.val[k + 1]; k++) {
       }
       if (k < 1) {
         image.pixelData[(image.width * j + i) * 4 + 0] = (std::byte)0;
