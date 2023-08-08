@@ -21,11 +21,17 @@ struct HeatMapDataSource {
   std::vector<glm::dvec3> pos;
   std::vector<glm::u8vec3> col;
   std::vector<float> val;
+  std::vector<glm::dvec2> bnd;
   float radius;
-  VariogramModel vmodel;
-  vector3* vecPoint;
-  matrix* mVInvt;
 };
+struct HeatMapGridSetting {
+  glm::dvec2 size;
+  float lineW;
+  int smplMode;
+  glm::dvec2 smplFreq;
+};
+
+bool InsidePolygon(glm::dvec2 point, std::vector<glm::dvec2> polygon);
 
 class CESIUM3DTILESSELECTION_API HeatMapOverlay final : public RasterOverlay {
 
@@ -34,6 +40,7 @@ public:
       const std::string& name,
       const std::vector<CesiumGeospatial::CartographicPolygon>& polygons,
       HeatMapDataSource dataSource,
+      HeatMapGridSetting gridSetting,
       bool invertSelection,
       const CesiumGeospatial::Ellipsoid& ellipsoid,
       const CesiumGeospatial::Projection& projection,
@@ -55,6 +62,9 @@ public:
     return this->_polygons;
   }
   const HeatMapDataSource& getHeatMapDataSource() { return this->_dataSource; }
+  const HeatMapGridSetting& getHeatMapGridSetting() {
+    return this->_gridSetting;
+  }
 
   bool getInvertSelection() const noexcept { return this->_invertSelection; }
 
@@ -64,5 +74,6 @@ private:
   CesiumGeospatial::Ellipsoid _ellipsoid;
   CesiumGeospatial::Projection _projection;
   HeatMapDataSource _dataSource;
+  HeatMapGridSetting _gridSetting;
 };
 } // namespace Cesium3DTilesSelection
